@@ -103,22 +103,36 @@ func NewFromDefault(logstashEndpoint string) *LogstashForwarderConfig {
 // NewFromContainer returns a new config based on /etc/logstash-forwarder.conf within the container,
 // if it exists.
 func NewFromContainer(container *docker.Container) (*LogstashForwarderConfig, error) {
-	filePath, err := calculateFilePath(container, "/etc/logstash-forwarder.conf")
+	filePath, filePath2, err := calculateFilePath(container, "/etc/logstash-forwarder.conf")
 	if err != nil {
 		return nil, err
 	}
 
 	config, err := NewFromFile(filePath)
 	if err != nil {
-		log.Debug("No logstash-forwarder config found in %s", container.ID)
-		return nil, err
+		if filePath2 != "" {
+			config, err := NewFromFile(filePath2)
+			if err != nil {
+				log.Debug("No logstash-forwarder config found in %s", container.ID)
+				return nil, err
+			}
+			return NewFromContainer2(container, config)
+		}
+		if err != nil {
+			log.Debug("No logstash-forwarder config found in %s", container.ID)
+			return nil, err
+		}
 	}
+	return NewFromContainer2(container, config)
+}
+
+func NewFromContainer2(container *docker.Container, config *LogstashForwarderConfig) (*LogstashForwarderConfig, error) {
 	log.Debug("Found logstash-forwarder config in %s", container.ID)
 
 	for _, file := range config.Files {
 		log.Debug("Adding files %s of type %s", file.Paths, file.Fields["type"])
 		for i, path := range file.Paths {
-			filePath, err := calculateFilePath(container, path)
+			filePath, _, err := calculateFilePath(container, path)
 			if err != nil {
 				log.Warning("Unable to add log file: %s", err)
 			} else {
@@ -129,28 +143,35 @@ func NewFromContainer(container *docker.Container) (*LogstashForwarderConfig, er
 	return config, nil
 }
 
-func calculateFilePath(container *docker.Container, path string) (string, error) {
+func calculateFilePath(container *docker.Container, path string) (string, string, error) {
 	for k, v := range container.Volumes {
 		if strings.HasPrefix(path, k) {
-			return v + strings.TrimPrefix(path, k), nil
+			return v + strings.TrimPrefix(path, k), "", nil
 		}
 	}
 
 	var prefix = "/var/lib/docker/"
+	var res1 = ""
+	var res2 = ""
 	var suffix = ""
 	switch container.Driver {
 	case "aufs":
-		prefix += "aufs/diff"
+		res1 = prefix + "aufs/diff"
+		res2 = prefix + "aufs/mnt"
 	case "btrfs":
-		prefix += "btrfs/subvolumes"
+		res1 = prefix + "btrfs/subvolumes"
 	case "devicemapper":
-		prefix += "devicemapper/mnt"
+		res1 = prefix + "devicemapper/mnt"
 		suffix = "/rootfs"
 	case "overlay":
-		prefix += "overlay"
+		res1 = prefix + "overlay"
 		suffix += "/merged"
 	default:
-		return "", fmt.Errorf("Unable to calculate file path with unknown driver [%s]", container.Driver)
+		return "", "", fmt.Errorf("Unable to calculate file path with unknown driver [%s]", container.Driver)
 	}
-	return fmt.Sprintf("%s/%s%s%s", prefix, container.ID, suffix, path), nil
+	if res2 != "" {
+		res2 = fmt.Sprintf("%s/%s%s%s", res1, container.ID, suffix, path)
+	}
+
+	return fmt.Sprintf("%s/%s%s%s", res1, container.ID, suffix, path), res2, nil
 }
