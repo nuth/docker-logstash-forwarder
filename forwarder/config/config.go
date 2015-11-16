@@ -66,6 +66,13 @@ func (config *LogstashForwarderConfig) AddContainerLogFile(container *docker.Con
 
 // NewFromFile returns a new config based on the file at path.
 func NewFromFile(path string) (*LogstashForwarderConfig, error) {
+    dfi, err := os.Stat(path)
+    log.Debug("\"%s\"", path)
+    if err != nil {
+        log.Debug("%s", err.Error())
+    } else {
+        log.Debug("%s", dfi.Mode())
+    }
 	configFile, err := os.Open(path)
 	defer configFile.Close()
 	if err != nil {
@@ -75,7 +82,8 @@ func NewFromFile(path string) (*LogstashForwarderConfig, error) {
 	logstashConfig := new(LogstashForwarderConfig)
 
 	jsonParser := json.NewDecoder(configFile)
-	if err = jsonParser.Decode(&logstashConfig); err != nil {
+    if err = jsonParser.Decode(&logstashConfig); err != nil {
+        log.Debug("%s", err.Error())
 		return nil, err
 	}
 
@@ -104,41 +112,62 @@ func NewFromDefault(logstashEndpoint string) *LogstashForwarderConfig {
 // if it exists.
 func NewFromContainer(container *docker.Container) (*LogstashForwarderConfig, error) {
 	filePath, filePath2, err := calculateFilePath(container, "/etc/logstash-forwarder.conf")
+
 	if err != nil {
 		return nil, err
 	}
 
 	config, err := NewFromFile(filePath)
-	if err != nil {
+    if err != nil {
+        log.Debug("No logstash-forwarder config found in diff %s", container.ID)
+        log.Debug("%s", err.Error());
 		if filePath2 != "" {
-			config, err := NewFromFile(filePath2)
-			if err != nil {
-				log.Debug("No logstash-forwarder config found in %s", container.ID)
-				return nil, err
+			config2, err2 := NewFromFile(filePath2)
+			if err2 != nil {
+                log.Debug("No logstash-forwarder config found in mnt %s", container.ID)
+                log.Debug("%s", err2.Error());
+				return nil, err2
 			}
-			return NewFromContainer2(container, config)
-		}
-		if err != nil {
-			log.Debug("No logstash-forwarder config found in %s", container.ID)
-			return nil, err
-		}
+			return NewFromContainer2(container, config2)
+		} else {
+            return nil, err
+        }
 	}
 	return NewFromContainer2(container, config)
 }
 
 func NewFromContainer2(container *docker.Container, config *LogstashForwarderConfig) (*LogstashForwarderConfig, error) {
 	log.Debug("Found logstash-forwarder config in %s", container.ID)
+	id := container.ID
 
 	for _, file := range config.Files {
 		log.Debug("Adding files %s of type %s", file.Paths, file.Fields["type"])
+        file.Fields["docker.id"] = id
+        file.Fields["docker.hostname"] = container.Config.Hostname
+        file.Fields["docker.name"] = container.Name
+        file.Fields["docker.image"] = container.Config.Image
+        for k, v := range container.Config.Labels {
+            file.Fields["docker.label."+k] = v
+        }
+
+        if container.Node != nil {
+            file.Fields["docker.node.id"] = container.Node.ID
+            file.Fields["docker.node.ip"] = container.Node.IP
+            file.Fields["docker.node.name"] = container.Node.Name
+
+            for k, v := range container.Node.Labels {
+                file.Fields["docker.node.label."+k] = v
+            }
+        }
 		for i, path := range file.Paths {
 			filePath, _, err := calculateFilePath(container, path)
 			if err != nil {
 				log.Warning("Unable to add log file: %s", err)
 			} else {
-				file.Paths[i] = filePath
-			}
-		}
+                file.Paths[i] = filePath
+                file.Fields["file.name"] = path;
+            }
+        }
 	}
 	return config, nil
 }
@@ -170,7 +199,7 @@ func calculateFilePath(container *docker.Container, path string) (string, string
 		return "", "", fmt.Errorf("Unable to calculate file path with unknown driver [%s]", container.Driver)
 	}
 	if res2 != "" {
-		res2 = fmt.Sprintf("%s/%s%s%s", res1, container.ID, suffix, path)
+		res2 = fmt.Sprintf("%s/%s%s%s", res2, container.ID, suffix, path)
 	}
 
 	return fmt.Sprintf("%s/%s%s%s", res1, container.ID, suffix, path), res2, nil

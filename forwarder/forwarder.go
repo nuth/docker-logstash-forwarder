@@ -96,6 +96,7 @@ func TriggerRefresh(client *docker.Client, logstashEndpoint string, configFile s
 		}
 		log.Info("Stopped logstash-forwarder")
 	}
+    time.Sleep(10 * time.Second)
 	cmd = exec.Command("logstash-forwarder", "-config", configPath, fmt.Sprintf("-quiet=%t", quiet))
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
